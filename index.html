@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    
+    <title>SANKET - C2 Master Command</title>
+    <meta name="application-name" content="SANKET">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0b0f17">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Leaflet CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <!-- React & Babel CDNs -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        #map { height: calc(100vh - 170px); width: 100%; z-index: 1; }
+        body { background-color: #0b0f17; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; margin: 0; user-select: none; -webkit-user-select: none; }
+        
+        .hex-bg {
+            background-image: url("data:image/svg+xml,%3Csvg width='40' height='69.28' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M40 17.32l-20 11.547L0 17.32V-5.774l20-11.547L40-5.774V17.32zm0 46.188l-20 11.548-20-11.548V40.414L20 28.867l20 11.547v23.094z' fill='none' stroke='rgba(16, 185, 129, 0.06)' stroke-width='1'/%3E%3C/svg%3E");
+        }
+
+        .scan-line { position: fixed; top: 0; left: 0; width: 100%; height: 6px; background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.15), transparent); pointer-events: none; z-index: 9999; }
+
+        .threat-marker { width: 16px; height: 16px; background-color: #ef4444; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 10px rgba(239, 68, 68, 0.8); }
+        .target-line { stroke-dasharray: 6 6; }
+        .distance-label { background: rgba(15, 23, 42, 0.95); border: 1px solid #3b82f6; color: #60a5fa; font-weight: bold; font-size: 10px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
+
+        .hud-fade-in { animation: fadeIn 0.25s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+        .spinner { width: 40px; height: 40px; border: 3px solid rgba(16, 185, 129, 0.3); border-radius: 50%; border-top-color: #10b981; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .red-light-mode { filter: grayscale(100%) sepia(100%) hue-rotate(315deg) saturate(300%) brightness(0.9); }
+    </style>
+</head>
+<body class="hex-bg">
+    <div class="scan-line"></div>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const FALLBACK_LAT = 32.2854;
+        const FALLBACK_LNG = 75.7005;
+
+        const INITIAL_DUMMY_SPOTTINGS = [
+            {
+                id: 1718000001000,
+                lat: 32.2890,
+                lng: 75.7050,
+                type: 'FPV / Quadcopter',
+                count: 2,
+                bearing: 45,
+                range: 500,
+                time: '04:15 AM',
+                date: '09/17/2026',
+                user: 'C2-COMMAND',
+                media: 'https://images.unsplash.com/photo-1527977966376-1c8408f9f108?w=150&auto=format&fit=crop&q=80'
+            }
+        ];
+
+        const getStoredSpottings = () => {
+            try {
+                const saved = localStorage.getItem('sanket_spottings');
+                if (!saved) {
+                    localStorage.setItem('sanket_spottings', JSON.stringify(INITIAL_DUMMY_SPOTTINGS));
+                    return INITIAL_DUMMY_SPOTTINGS;
+                }
+                return JSON.parse(saved);
+            } catch (e) {
+                return INITIAL_DUMMY_SPOTTINGS;
+            }
+        };
+
+        const getDistance = (lat1, lon1, lat2, lon2) => {
+            const R = 6371e3; 
+            const p1 = lat1 * Math.PI/180; const p2 = lat2 * Math.PI/180;
+            const dp = (lat2-lat1) * Math.PI/180; const dl = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(dp/2) * Math.sin(dp/2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl/2) * Math.sin(dl/2);
+            return Math.round(R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)))); 
+        };
+
+        const getBearing = (lat1, lon1, lat2, lon2) => {
+            const toRad = (deg) => deg * Math.PI / 180;
+            const toDeg = (rad) => rad * 180 / Math.PI;
+            const dLon = toRad(lon2 - lon1);
+            const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+            const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+            return Math.round((toDeg(Math.atan2(y, x)) + 360) % 360);
+        };
+
+        function App() {
+            const [isLoggedIn, setIsLoggedIn] = useState(false);
+            const [loginId, setLoginId] = useState('');
+            const [password, setPassword] = useState('');
+            const [isC2User, setIsC2User] = useState(false);
+            
+            const [activeTab, setActiveTab] = useState('map'); // Default to map so C2 access is immediate
+            const [isTransmitting, setIsTransmitting] = useState(false);
+            const [isMenuOpen, setIsMenuOpen] = useState(false);
+            const [redLightMode, setRedLightMode] = useState(false);
+            
+            const [mediaUrl, setMediaUrl] = useState(null);
+            const [droneType, setDroneType] = useState('FPV / Quadcopter');
+            const [droneCount, setDroneCount] = useState(1);
+            const [targetDistance, setTargetDistance] = useState('500'); 
+            const [liveHeading, setLiveHeading] = useState(0); 
+            const [lockedCaptureBearing, setLockedCaptureBearing] = useState(null); 
+            
+            const [gpsCoords, setGpsCoords] = useState(null);
+            const [gpsStatus, setGpsStatus] = useState('STANDBY');
+            
+            const [spottings, setSpottings] = useState(getStoredSpottings);
+            const [selectedPostDetails, setSelectedPostDetails] = useState(null);
+            const [showC2CentreModal, setShowC2CentreModal] = useState(false);
+            const [showLogsModal, setShowLogsModal] = useState(false);
+
+            const [broadcastMsg, setBroadcastMsg] = useState('');
+            const [selectedTargetPost, setSelectedTargetPost] = useState('ALL');
+            const [commsFeed, setCommsFeed] = useState([
+                { id: 1, time: '04:10 AM', sender: 'C2 MASTER', text: 'Sector grid telemetry online. Radar active.' },
+                { id: 2, time: '04:16 AM', sender: 'ALPHA', text: 'Target vector received. Standby for soft-kill engagement.' }
+            ]);
+
+            useEffect(() => {
+                try {
+                    localStorage.setItem('sanket_spottings', JSON.stringify(spottings));
+                } catch (e) {
+                    console.warn("Storage quota exceeded");
+                }
+            }, [spottings]);
+
+            const [militaryPosts, setMilitaryPosts] = useState([
+                { id: "ALPHA", latOffset: 0.006, lngOffset: 0.005, hasCUAS: true, name: "FORWARD BASE ALPHA", equipment: ["PRABAL Anti-Drone Gun", "GMADS"] },
+                { id: "BRAVO", latOffset: -0.005, lngOffset: -0.006, hasCUAS: false, name: "SENTRY POST BRAVO", equipment: ["5.56mm INSAS Rifle", "Binoculars"] },
+                { id: "CHARLIE", latOffset: 0.004, lngOffset: -0.007, hasCUAS: true, name: "FORWARD BASE CHARLIE", equipment: ["Vehicle EW Jammer", "7.62mm LMG"] },
+                { id: "DELTA", latOffset: -0.005, lngOffset: 0.006, hasCUAS: false, name: "SENTRY POST DELTA", equipment: ["AK-203 Assault Rifle"] }
+            ]);
+
+            const [newPostName, setNewPostName] = useState('');
+            const [newPostCUAS, setNewPostCUAS] = useState(true);
+            const [newPostEqpt, setNewPostEqpt] = useState('Anti-Drone Gun');
+            const [newPostLatOffset, setNewPostLatOffset] = useState('0.003');
+            const [newPostLngOffset, setNewPostLngOffset] = useState('0.003');
+
+            const mapRef = useRef(null);
+            const leafletMap = useRef(null);
+            const layerGroup = useRef(null);
+
+            const activateGPS = () => {
+                setGpsStatus('ACQUIRING...');
+                if (navigator.geolocation) {
+                    navigator.geolocation.watchPosition(
+                        (pos) => {
+                            setGpsCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+                            setGpsStatus('ACTIVE');
+                        },
+                        (err) => {
+                            setGpsCoords({ lat: FALLBACK_LAT, lng: FALLBACK_LNG });
+                            setGpsStatus('FALLBACK');
+                        },
+                        { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+                    );
+                } else {
+                    setGpsCoords({ lat: FALLBACK_LAT, lng: FALLBACK_LNG });
+                    setGpsStatus('UNSUPPORTED');
+                }
+            };
+
+            useEffect(() => {
+                const handleOrientation = (event) => {
+                    let heading = null;
+                    if (event.webkitCompassHeading !== undefined) heading = event.webkitCompassHeading;
+                    else if (event.alpha !== null) heading = 360 - event.alpha;
+                    if (heading !== null) setLiveHeading(Math.round(heading));
+                };
+                window.addEventListener('deviceorientationabsolute', handleOrientation);
+                window.addEventListener('deviceorientation', handleOrientation);
+                return () => {
+                    window.removeEventListener('deviceorientationabsolute', handleOrientation);
+                    window.removeEventListener('deviceorientation', handleOrientation);
+                };
+            }, []);
+
+            const handleMediaCapture = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    setLockedCaptureBearing(liveHeading);
+                    const reader = new FileReader();
+                    reader.onloadend = () => setMediaUrl(reader.result);
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            const handleSubmitSpotting = (e) => {
+                e.preventDefault();
+                if (!mediaUrl) { alert("Intelligence picture capture required."); return; }
+
+                const finalBearing = lockedCaptureBearing !== null ? lockedCaptureBearing : liveHeading;
+                const baseLat = gpsCoords ? gpsCoords.lat : FALLBACK_LAT;
+                const baseLng = gpsCoords ? gpsCoords.lng : FALLBACK_LNG;
+                const rad = finalBearing * (Math.PI / 180);
+                
+                const distMeters = parseFloat(targetDistance) || 500;
+                const latOffset = (distMeters / 111320) * Math.cos(rad);
+                const lngOffset = (distMeters / (111320 * Math.cos(baseLat * Math.PI / 180))) * Math.sin(rad);
+
+                const targetLat = baseLat + latOffset;
+                const targetLng = baseLng + lngOffset;
+
+                const newSpotting = {
+                    id: Date.now(), lat: targetLat, lng: targetLng, type: droneType, count: parseInt(droneCount), bearing: finalBearing,
+                    range: distMeters,
+                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    date: new Date().toLocaleDateString(),
+                    user: loginId.toUpperCase(), media: mediaUrl
+                };
+
+                setIsTransmitting(true);
+                setTimeout(() => {
+                    setSpottings([newSpotting, ...spottings]);
+                    setMediaUrl(null);
+                    setLockedCaptureBearing(null);
+                    setIsTransmitting(false);
+                    setActiveTab('map'); 
+                    setTimeout(() => {
+                        if(leafletMap.current) leafletMap.current.flyTo([targetLat, targetLng], 17, { duration: 1.5 });
+                    }, 100);
+                }, 1500); 
+            };
+
+            const handleAddPostSubmit = (e) => {
+                e.preventDefault();
+                if (!newPostName) { alert("Enter post name."); return; }
+                const addedPost = {
+                    id: `POST_${Date.now()}`,
+                    latOffset: parseFloat(newPostLatOffset) || 0.002,
+                    lngOffset: parseFloat(newPostLngOffset) || 0.002,
+                    hasCUAS: newPostCUAS,
+                    name: newPostName.toUpperCase(),
+                    equipment: newPostEqpt.split(',').map(s => s.trim())
+                };
+                setMilitaryPosts([...militaryPosts, addedPost]);
+                setNewPostName('');
+                alert("Tactical post successfully deployed across network.");
+            };
+
+            const handleSendBroadcast = (e) => {
+                e.preventDefault();
+                if (!broadcastMsg.trim()) return;
+                const newComms = {
+                    id: Date.now(),
+                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    sender: `C2 MASTER -> ${selectedTargetPost}`,
+                    text: broadcastMsg
+                };
+                setCommsFeed([newComms, ...commsFeed]);
+                setBroadcastMsg('');
+                alert(`Master command dispatched successfully to [ ${selectedTargetPost} ]!`);
+            };
+
+            useEffect(() => {
+                const currentLat = gpsCoords ? gpsCoords.lat : FALLBACK_LAT;
+                const currentLng = gpsCoords ? gpsCoords.lng : FALLBACK_LNG;
+
+                if (mapRef.current && !leafletMap.current) {
+                    leafletMap.current = L.map(mapRef.current, { zoomControl: false }).setView([currentLat, currentLng], 14);
+                    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { 
+                        maxZoom: 19, attribution: 'Esri'
+                    }).addTo(leafletMap.current);
+                    layerGroup.current = L.layerGroup().addTo(leafletMap.current);
+                }
+
+                if (activeTab === 'map' && leafletMap.current) {
+                    setTimeout(() => { leafletMap.current.invalidateSize(); }, 150);
+                }
+
+                if (layerGroup.current && leafletMap.current) {
+                    layerGroup.current.clearLayers();
+                    
+                    const latestSpot = spottings.length > 0 ? spottings[0] : null;
+
+                    const userHtml = `<div style="background-color: #10b981; width: 14px; height: 14px; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 10px #10b981;"></div>`;
+                    L.marker([currentLat, currentLng], { icon: L.divIcon({ html: userHtml, className: '' }) })
+                        .addTo(layerGroup.current)
+                        .bindPopup(`<b>C2 COMMAND UPLINK</b><br/>ID: ${loginId.toUpperCase()}`);
+
+                    militaryPosts.forEach(post => {
+                        const postLat = currentLat + post.latOffset;
+                        const postLng = currentLng + post.lngOffset;
+                        const color = post.hasCUAS ? '#3b82f6' : '#f59e0b';
+                        const html = `<div style="background-color: ${color}; width: 14px; height: 14px; border: 2px solid white; border-radius: 2px; box-shadow: 0 0 8px ${color}"></div>`;
+                        
+                        let marker = L.marker([postLat, postLng], { icon: L.divIcon({ html, className: '' }) })
+                            .addTo(layerGroup.current);
+
+                        marker.on('click', () => {
+                            let distToThreat = null;
+                            let bearingToThreat = null;
+                            if (latestSpot) {
+                                distToThreat = getDistance(postLat, postLng, latestSpot.lat, latestSpot.lng);
+                                bearingToThreat = getBearing(postLat, postLng, latestSpot.lat, latestSpot.lng);
+                            }
+                            setSelectedPostDetails({
+                                ...post,
+                                lat: postLat,
+                                lng: postLng,
+                                distToThreat,
+                                bearingToThreat
+                            });
+                        });
+                    });
+
+                    if (latestSpot) {
+                        L.marker([latestSpot.lat, latestSpot.lng], { icon: L.divIcon({ html: `<div class="threat-marker"></div>`, className: '' }) })
+                            .addTo(layerGroup.current)
+                            .bindPopup(`<strong>${latestSpot.type}</strong><br/>Captured Bearing: ${latestSpot.bearing}°<br/><img src="${latestSpot.media}" style="width:100px; height:60px; object-fit:cover; margin-top:4px; border:1px solid #ef4444;"/>`);
+
+                        const distances = militaryPosts.map(post => ({
+                            ...post,
+                            lat: currentLat + post.latOffset,
+                            lng: currentLng + post.lngOffset,
+                            dist: getDistance(latestSpot.lat, latestSpot.lng, currentLat + post.latOffset, currentLng + post.lngOffset)
+                        }));
+                        
+                        distances.sort((a, b) => a.dist - b.dist).slice(0, 3).forEach(targetPost => {
+                            const lineColor = targetPost.hasCUAS ? '#3b82f6' : '#f59e0b';
+                            L.polyline([[latestSpot.lat, latestSpot.lng], [targetPost.lat, targetPost.lng]], { color: lineColor, weight: 2, className: 'target-line' }).addTo(layerGroup.current);
+                            
+                            const centerLat = (latestSpot.lat + targetPost.lat) / 2;
+                            const centerLng = (latestSpot.lng + targetPost.lng) / 2;
+                            const postBg = getBearing(targetPost.lat, targetPost.lng, latestSpot.lat, latestSpot.lng);
+                            
+                            L.marker([centerLat, centerLng], { icon: L.divIcon({ className: 'distance-label', html: `${targetPost.dist}m | Bg: ${postBg}°` }) }).addTo(layerGroup.current);
+                        });
+                    }
+                }
+            }, [activeTab, spottings, militaryPosts, gpsCoords]);
+
+            const lastSpotted = spottings.length > 0 ? spottings[0] : null;
+
+            if (!isLoggedIn) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center p-4 relative">
+                        <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-8 shadow-2xl relative z-10 hud-fade-in text-center">
+                            <h1 className="text-3xl font-extrabold text-white tracking-widest mb-1">SANKET</h1>
+                            <p className="text-[11px] font-bold text-emerald-400 tracking-wider mb-2">
+                                <span className="text-white">S</span>ecure <span className="text-white">A</span>nti-drone <span className="text-white">N</span>etwork & <span className="text-white">K</span>inetic <span className="text-white">E</span>ngagement <span className="text-white">T</span>elemetry
+                            </p>
+                            <p className="text-slate-500 text-[10px] mb-6 font-mono tracking-widest">C2 MASTER LOGIN PORTAL</p>
+                            
+                            <form onSubmit={(e) => { 
+                                e.preventDefault(); 
+                                if (loginId && password) {
+                                    const isC2 = loginId.toUpperCase().includes('C2') || loginId.toUpperCase().includes('ADMIN') || loginId.toUpperCase().includes('COMMAND');
+                                    setIsC2User(isC2);
+                                    activateGPS();
+                                    setIsLoggedIn(true); 
+                                }
+                            }} className="space-y-4 text-left">
+                                <input type="text" placeholder="OPERATOR / C2 ID (e.g. C2-COMMAND)" required value={loginId} onChange={(e) => setLoginId(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-sm text-emerald-400 focus:outline-none focus:border-emerald-500 font-mono" />
+                                <input type="password" placeholder="AUTHORIZATION CODE" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-sm text-emerald-400 focus:outline-none focus:border-emerald-500 font-mono" />
+                                <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3.5 rounded-lg text-xs uppercase tracking-widest transition-colors">
+                                    Authenticate C2 Uplink & GPS
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className={`flex flex-col h-screen max-w-md mx-auto bg-slate-950 font-mono relative overflow-hidden ${redLightMode ? 'red-light-mode' : ''}`}>
+                    {isTransmitting && (
+                        <div className="absolute inset-0 z-[5000] flex flex-col items-center justify-center bg-black/90 hud-fade-in">
+                            <div className="spinner mb-4"></div>
+                            <h2 className="text-xl font-bold text-red-500 tracking-widest">TRANSMITTING ALERT...</h2>
+                        </div>
+                    )}
+
+                    {/* PERSISTENT POST HOLISTIC DATA POPUP WINDOW */}
+                    {selectedPostDetails && (
+                        <div className="absolute inset-0 z-[3000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setSelectedPostDetails(null)}>
+                            <div className="w-full max-w-xs bg-slate-900 border border-blue-500 rounded-xl shadow-2xl p-4 space-y-3 hud-fade-in text-xs text-slate-200" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+                                    <div>
+                                        <span className="font-bold text-blue-400 text-sm">{selectedPostDetails.name}</span>
+                                        <div className="text-[9px] text-slate-400">ID: {selectedPostDetails.id}</div>
+                                    </div>
+                                    <button onClick={() => setSelectedPostDetails(null)} className="text-red-400 hover:text-white font-bold text-sm bg-slate-950 px-2 py-1 rounded">✕</button>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <div className="flex justify-between bg-slate-950 p-2 rounded border border-slate-800">
+                                        <span className="text-slate-400">C-UAS STATUS:</span>
+                                        <span className={selectedPostDetails.hasCUAS ? "text-emerald-400 font-bold" : "text-amber-500 font-bold"}>
+                                            {selectedPostDetails.hasCUAS ? "EQUIPPED (JAMMER ACTIVE)" : "STANDARD SENTRY"}
+                                        </span>
+                                    </div>
+
+                                    <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                                        <span className="text-[10px] text-slate-400 block mb-1">ASSIGNED EQUIPMENT:</span>
+                                        <ul className="space-y-1 text-slate-200">
+                                            {selectedPostDetails.equipment.map((eq, idx) => (
+                                                <li key={idx} className="text-[11px]">• {eq}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+
+                                    <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                                        <span className="text-[10px] text-slate-400 block mb-1">GRID COORDINATES:</span>
+                                        <div className="text-slate-300 font-mono text-[11px]">Lat: {selectedPostDetails.lat.toFixed(4)}, Lng: {selectedPostDetails.lng.toFixed(4)}</div>
+                                    </div>
+
+                                    {selectedPostDetails.distToThreat !== null ? (
+                                        <div className="bg-red-950/30 border border-red-500/40 p-2.5 rounded">
+                                            <span className="text-[10px] text-red-400 block mb-1 font-bold">ACTIVE THREAT TELEMETRY:</span>
+                                            <div className="flex justify-between text-slate-200">
+                                                <span>Distance: <strong className="text-white">{selectedPostDetails.distToThreat}m</strong></span>
+                                                <span>Bearing: <strong className="text-amber-400">{selectedPostDetails.bearingToThreat}°</strong></span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="text-center text-[10px] text-slate-500 py-1">No active threat targeted across sector</div>
+                                    )}
+                                </div>
+
+                                <button onClick={() => setSelectedPostDetails(null)} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded uppercase text-[10px]">
+                                    Dismiss Window
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* SPOTTING HISTORY LOG MODAL OVERLAY */}
+                    {showLogsModal && (
+                        <div className="absolute inset-0 z-[2500] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowLogsModal(false)}>
+                            <div className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-xl shadow-2xl flex flex-col max-h-[85vh] hud-fade-in" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex justify-between items-center p-4 border-b border-slate-800 bg-slate-950 rounded-t-xl">
+                                    <span className="text-xs font-bold text-emerald-400">C2 TELEMETRY AUDIT LOG</span>
+                                    <button onClick={() => setShowLogsModal(false)} className="text-red-400 hover:text-white font-bold text-sm">✕</button>
+                                </div>
+                                <div className="p-4 overflow-y-auto space-y-3 flex-1 text-xs text-slate-300">
+                                    <div className="flex justify-between items-center mb-1 pb-1 border-b border-slate-800">
+                                        <span className="text-slate-400">Total Recorded: {spottings.length}</span>
+                                        {spottings.length > 0 && (
+                                            <button onClick={() => { if(confirm('Clear all telemetry logs?')) setSpottings([]); }} className="text-[10px] bg-red-500/20 text-red-400 px-2 py-1 rounded border border-red-500/40 font-bold">
+                                                CLEAR LOGS
+                                            </button>
+                                        )}
+                                    </div>
+                                    {spottings.length === 0 ? (
+                                        <div className="text-center text-slate-500 py-12 text-xs">No drone spottings recorded yet.</div>
+                                    ) : (
+                                        spottings.map((s) => (
+                                            <div key={s.id} className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex gap-3 items-center">
+                                                <img src={s.media} className="w-16 h-16 object-cover rounded border border-red-500/40 shrink-0" />
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex justify-between items-start font-bold">
+                                                        <span className="text-red-400 truncate">{s.type} (Qty: {s.count})</span>
+                                                        <span className="text-[10px] text-slate-500">{s.time}</span>
+                                                    </div>
+                                                    <div className="text-[11px] text-slate-300 mt-1">
+                                                        <div>Bearing: <span className="text-amber-400 font-bold">{s.bearing}°</span></div>
+                                                        <div>Range: <span className="text-blue-400 font-bold">{s.range}m</span></div>
+                                                        <div className="text-[9px] text-slate-400 mt-0.5">Operator: {s.user}</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* C2 MASTER COMMAND & ASSET MANAGER MODAL OVERLAY (KEEPS MAP ACCESSIBLE) */}
+                    {showC2CentreModal && (
+                        <div className="absolute inset-0 z-[2500] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowC2CentreModal(false)}>
+                            <div className="w-full max-w-sm bg-slate-900 border border-blue-500 rounded-xl shadow-2xl flex flex-col max-h-[85vh] hud-fade-in" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex justify-between items-center p-4 border-b border-slate-800 bg-slate-950 rounded-t-xl">
+                                    <span className="text-xs font-bold text-emerald-400">C2 MASTER COMMAND & CONTROL</span>
+                                    <button onClick={() => setShowC2CentreModal(false)} className="text-red-400 hover:text-white font-bold text-sm">✕</button>
+                                </div>
+                                <div className="p-4 overflow-y-auto space-y-4 text-xs flex-1">
+                                    <div className="bg-emerald-950/40 border border-emerald-500/40 p-3 rounded-lg">
+                                        <div className="font-bold text-emerald-400 mb-1">C2 AUTHORIZATION STATUS: ACTIVE</div>
+                                        <div className="text-[10px] text-slate-300">Master access granted. Deploy tactical posts, assign equipment, and transmit electronic warfare commands while maintaining live map telemetry.</div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div className="bg-slate-950 p-3 rounded border border-slate-800 text-center">
+                                            <div className="text-[10px] text-slate-400">ACTIVE POSTS</div>
+                                            <div className="text-lg font-bold text-blue-400">{militaryPosts.length}</div>
+                                        </div>
+                                        <div className="bg-slate-950 p-3 rounded border border-slate-800 text-center">
+                                            <div className="text-[10px] text-slate-400">C-UAS JAMMERS</div>
+                                            <div className="text-lg font-bold text-emerald-400">{militaryPosts.filter(p => p.hasCUAS).length}</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                                        <div className="font-bold text-emerald-400 mb-2">DEPLOY NEW TACTICAL POST</div>
+                                        <form onSubmit={(e) => { handleAddPostSubmit(e); setShowC2CentreModal(false); }} className="space-y-2.5">
+                                            <input type="text" placeholder="POST NAME (e.g. FOB ECHO)" value={newPostName} onChange={(e) => setNewPostName(e.target.value)} required className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-emerald-400 outline-none" />
+                                            <input type="text" placeholder="EQUIPMENT (comma separated)" value={newPostEqpt} onChange={(e) => setNewPostEqpt(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-emerald-400 outline-none" />
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <div>
+                                                    <label className="text-[9px] text-slate-400">LAT OFFSET</label>
+                                                    <input type="text" value={newPostLatOffset} onChange={(e) => setNewPostLatOffset(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs text-emerald-400 outline-none" />
+                                                </div>
+                                                <div>
+                                                    <label className="text-[9px] text-slate-400">LNG OFFSET</label>
+                                                    <input type="text" value={newPostLngOffset} onChange={(e) => setNewPostLngOffset(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs text-emerald-400 outline-none" />
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <input type="checkbox" id="cuasCheck" checked={newPostCUAS} onChange={(e) => setNewPostCUAS(e.target.checked)} />
+                                                <label htmlFor="cuasCheck" className="text-[11px]">Equipped with C-UAS / Jammer</label>
+                                            </div>
+                                            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded text-xs uppercase">Deploy Post</button>
+                                        </form>
+                                    </div>
+
+                                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                                        <div className="font-bold text-amber-400 mb-2">NETWORK BROADCAST & ENGAGEMENT ORDERS</div>
+                                        <form onSubmit={(e) => { handleSendBroadcast(e); setShowC2CentreModal(false); }} className="space-y-2.5">
+                                            <div>
+                                                <label className="text-[9px] text-slate-400 mb-1 block">TARGET RECIPIENT</label>
+                                                <select value={selectedTargetPost} onChange={(e) => setSelectedTargetPost(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-amber-400 font-bold outline-none">
+                                                    <option value="ALL">ALL POSTS (Network-Wide Broadcast)</option>
+                                                    {militaryPosts.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="text-[9px] text-slate-400 mb-1 block">TACTICAL INSTRUCTION / COMMAND</label>
+                                                <textarea rows="2" placeholder="Enter directive (e.g. Activate soft-kill countermeasures)..." value={broadcastMsg} onChange={(e) => setBroadcastMsg(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 outline-none"></textarea>
+                                            </div>
+                                            <button type="submit" className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-2 rounded text-xs uppercase">Transmit Master Command</button>
+                                        </form>
+                                    </div>
+
+                                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                                        <div className="font-bold text-slate-300 mb-2">SECURE COMMS AUDIT TRAIL</div>
+                                        <div className="space-y-2 max-h-36 overflow-y-auto">
+                                            {commsFeed.map(c => (
+                                                <div key={c.id} className="bg-slate-900 p-2 rounded border border-slate-800 text-[10px]">
+                                                    <div className="flex justify-between text-emerald-400 font-bold">
+                                                        <span>{c.sender}</span>
+                                                        <span className="text-slate-500">{c.time}</span>
+                                                    </div>
+                                                    <div className="text-slate-300 mt-0.5">{c.text}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <header className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex justify-between items-center z-50">
+                        <div>
+                            <span className="text-xs font-bold text-emerald-400 tracking-wider">
+                                {isC2User ? 'C2 COMMAND // ' : 'SANKET // '}{loginId.toUpperCase()}
+                            </span>
+                            <span className="block text-[10px] text-slate-400 mt-0.5">
+                                GPS [{gpsStatus}]: {gpsCoords ? `${gpsCoords.lat.toFixed(4)}, ${gpsCoords.lng.toFixed(4)}` : 'ACQUIRING...'}
+                            </span>
+                        </div>
+                        <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="text-emerald-400 p-1 text-lg">⚙️</button>
+
+                        {isMenuOpen && (
+                            <div className="absolute top-14 right-4 w-60 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-[1000] py-2 hud-fade-in">
+                                <button onClick={() => { setShowLogsModal(true); setIsMenuOpen(false); }} className="w-full text-left px-4 py-2.5 text-[10px] font-bold text-emerald-400 hover:bg-slate-800 border-b border-slate-800 flex justify-between items-center">
+                                    <span>📋 SPOTTING LOG</span>
+                                    <span className="bg-emerald-500/20 px-1.5 py-0.5 rounded text-[9px]">{spottings.length}</span>
+                                </button>
+                                <button onClick={() => { setShowC2CentreModal(true); setIsMenuOpen(false); }} className="w-full text-left px-4 py-2.5 text-[10px] font-bold text-blue-400 hover:bg-slate-800 border-b border-slate-800 flex justify-between items-center">
+                                    <span>⚡ C2 CENTRE COMMAND</span>
+                                    <span className="bg-blue-500/20 px-1.5 py-0.5 rounded text-[9px]">ADMIN</span>
+                                </button>
+                                <button onClick={() => { setRedLightMode(!redLightMode); setIsMenuOpen(false); }} className="w-full text-left px-4 py-2.5 text-[10px] font-bold text-slate-300 hover:bg-slate-800 border-b border-slate-800">
+                                    {redLightMode ? 'DISABLE RED-LIGHT' : 'RED-LIGHT MODE'}
+                                </button>
+                                <button onClick={() => { setIsLoggedIn(false); setIsMenuOpen(false); }} className="w-full text-left px-4 py-2.5 text-[10px] font-bold text-red-400 hover:bg-slate-800">
+                                    &gt;&gt; SECURE LOGOUT
+                                </button>
+                            </div>
+                        )}
+                    </header>
+
+                    <main className="flex-1 flex flex-col relative z-10 overflow-hidden">
+                        {/* SPOTTER HUD */}
+                        <div className={`w-full h-full p-4 flex flex-col hud-fade-in ${activeTab === 'spotter' ? 'flex' : 'hidden'} overflow-y-auto`}>
+                            <div className="border border-slate-700 rounded-xl p-2 text-center bg-slate-900 mb-3">
+                                {mediaUrl ? (
+                                    <div className="relative rounded-lg overflow-hidden">
+                                        <img src={mediaUrl} className="w-full h-36 object-cover" />
+                                        <div className="absolute bottom-2 left-2 bg-black/80 px-2 py-1 rounded text-[10px] text-amber-400 font-bold border border-amber-500/40">
+                                            Locked Bearing: {lockedCaptureBearing}°
+                                        </div>
+                                        <button onClick={() => { setMediaUrl(null); setLockedCaptureBearing(null); }} className="absolute top-2 right-2 bg-black/70 text-red-400 w-7 h-7 rounded-full text-xs font-bold">✕</button>
+                                    </div>
+                                ) : (
+                                    <label className="w-full cursor-pointer bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-3 flex flex-col items-center justify-center transition-colors">
+                                        <span className="text-xl mb-1">📷</span>
+                                        <span className="text-[11px] text-white font-bold uppercase">CAPTURE PHOTO & LOCK BEARING</span>
+                                        <input type="file" accept="image/*" capture="environment" onChange={handleMediaCapture} className="hidden" />
+                                    </label>
+                                )}
+                            </div>
+
+                            <form onSubmit={handleSubmitSpotting} className="space-y-3">
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div className="col-span-2">
+                                        <label className="text-[9px] font-bold text-slate-400 mb-1 block">CLASSIFICATION</label>
+                                        <select value={droneType} onChange={(e) => setDroneType(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-200 outline-none">
+                                            <option>FPV / Quadcopter</option>
+                                            <option>Fixed-Wing Loitering</option>
+                                            <option>Heavy Recon UAV</option>
+                                            <option>Swarm Cluster</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="text-[9px] font-bold text-slate-400 mb-1 block">QTY</label>
+                                        <input type="number" min="1" value={droneCount} onChange={(e) => setDroneCount(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-200 text-center outline-none" />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="text-[9px] font-bold text-emerald-400 mb-1 block">ESTIMATED TARGET RANGE (DISTANCE)</label>
+                                    <select value={targetDistance} onChange={(e) => setTargetDistance(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-emerald-400 font-bold outline-none">
+                                        <option value="10">10 Meters (Close Range / Indoor Test)</option>
+                                        <option value="50">50 Meters (Immediate Perimeter)</option>
+                                        <option value="200">200 Meters (Near Field)</option>
+                                        <option value="500">500 Meters (Standard C-UAS Zone)</option>
+                                        <option value="1500">1.5 Kilometers (Distant Horizon)</option>
+                                    </select>
+                                </div>
+
+                                <div className="flex flex-col items-center my-1">
+                                    <label className="text-[9px] font-bold text-amber-500 mb-1">LIVE COMPASS HEADING</label>
+                                    <div className="relative w-24 h-24 rounded-full border-4 border-slate-800 bg-slate-900 flex items-center justify-center">
+                                        <div className="absolute inset-0 transition-transform duration-100 ease-out" style={{ transform: `rotate(${-liveHeading}deg)` }}>
+                                            <div className="absolute top-1 left-1/2 -translate-x-1/2 text-red-500 font-bold text-[10px]">N</div>
+                                            <div className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-[10px]">E</div>
+                                            <div className="absolute bottom-1 left-1/2 -translate-x-1/2 text-slate-500 font-bold text-[10px]">S</div>
+                                            <div className="absolute left-1.5 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-[10px]">W</div>
+                                        </div>
+                                        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[4px] border-l-transparent border-r-[4px] border-r-transparent border-b-[7px] border-b-amber-500 z-10"></div>
+                                        <span className="text-xs font-bold text-amber-500 z-10">{liveHeading}°</span>
+                                    </div>
+                                </div>
+
+                                <button type="submit" className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3.5 rounded-xl text-xs uppercase tracking-wider transition-colors">
+                                    Transmit Threat & Calculate Telemetry
+                                </button>
+                            </form>
+                        </div>
+
+                        {/* MAP TAB */}
+                        <div className={`flex-1 flex flex-col relative h-full w-full ${activeTab === 'map' ? 'block' : 'hidden'}`}>
+                            {lastSpotted && (
+                                <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[400] bg-black/90 border border-red-500 px-3 py-1.5 rounded-full shadow-lg flex items-center gap-2">
+                                    <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                                    <span className="text-[10px] font-bold text-white">ACTIVE THREAT: {lastSpotted.type.toUpperCase()}</span>
+                                </div>
+                            )}
+                            <div id="map" ref={mapRef} className="flex-1 w-full h-full"></div>
+                        </div>
+                    </main>
+
+                    <nav className="bg-slate-900 border-t border-slate-800 grid grid-cols-3 p-2.5 gap-2 z-10 relative">
+                        <button onClick={() => setActiveTab('spotter')} className={`py-2.5 rounded-lg text-xs font-bold transition-colors ${activeTab === 'spotter' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400'}`}>🎯 SPOTTER</button>
+                        <button onClick={() => setActiveTab('map')} className={`py-2.5 rounded-lg text-xs font-bold transition-colors ${activeTab === 'map' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400'}`}>🗺️ C2 MAP</button>
+                        <button onClick={() => setShowC2CentreModal(true)} className="py-2.5 rounded-lg text-xs font-bold transition-colors bg-blue-600/30 text-blue-400 border border-blue-500/40 hover:bg-blue-600 hover:text-white">⚡ C2 CENTRE</button>
+                    </nav>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
