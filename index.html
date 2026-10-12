@@ -412,8 +412,27 @@
             const layerGroup = useRef(null);
 
             useEffect(() => {
+                return () => {
+                    if (leafletMap.current) {
+                        leafletMap.current.remove();
+                        leafletMap.current = null;
+                        layerGroup.current = null;
+                    }
+                };
+            }, []);
+
+            useEffect(() => {
                 const currentLat = gpsCoords ? gpsCoords.lat : FALLBACK_LAT;
                 const currentLng = gpsCoords ? gpsCoords.lng : FALLBACK_LNG;
+
+                if (!showMapModal) {
+                    if (leafletMap.current) {
+                        leafletMap.current.remove();
+                        leafletMap.current = null;
+                        layerGroup.current = null;
+                    }
+                    return;
+                }
 
                 if (mapRef.current && !leafletMap.current) {
                     leafletMap.current = L.map(mapRef.current, { zoomControl: false }).setView([currentLat, currentLng], 14);
@@ -423,8 +442,9 @@
                     layerGroup.current = L.layerGroup().addTo(leafletMap.current);
                 }
 
-                if (showMapModal && leafletMap.current) {
-                    setTimeout(() => { leafletMap.current.invalidateSize(); }, 150);
+                if (leafletMap.current) {
+                    const map = leafletMap.current;
+                    setTimeout(() => { if (leafletMap.current === map) map.invalidateSize(); }, 150);
                 }
 
                 if (layerGroup.current && leafletMap.current) {
