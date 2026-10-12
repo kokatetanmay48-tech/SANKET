@@ -11,6 +11,13 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#0b0f17">
     
+    <!-- PWA Web App Manifest & App Icons -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/svg+xml" href="icon.svg">
+    <link rel="alternate icon" type="image/png" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <meta name="apple-mobile-web-app-title" content="SANKET">
+    
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
@@ -61,6 +68,17 @@
 <body class="hex-bg">
     <div class="scan-line"></div>
     <div id="root"></div>
+
+    <!-- PWA Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then((reg) => console.log('[SANKET PWA] Service Worker registered with scope:', reg.scope))
+                    .catch((err) => console.warn('[SANKET PWA] Service Worker registration failed:', err));
+            });
+        }
+    </script>
 
     <script type="text/babel">
         // --- FIREBASE CONFIGURATION ---
@@ -162,6 +180,42 @@
             
             const [isMenuOpen, setIsMenuOpen] = useState(false);
             const [redLightMode, setRedLightMode] = useState(false);
+            
+            const [installPrompt, setInstallPrompt] = useState(null);
+            const [isAppInstalled, setIsAppInstalled] = useState(false);
+
+            useEffect(() => {
+                const handleBeforeInstall = (e) => {
+                    e.preventDefault();
+                    setInstallPrompt(e);
+                };
+                const handleAppInstalled = () => {
+                    setIsAppInstalled(true);
+                    setInstallPrompt(null);
+                };
+                window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+                window.addEventListener('appinstalled', handleAppInstalled);
+                if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
+                    setIsAppInstalled(true);
+                }
+                return () => {
+                    window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+                    window.removeEventListener('appinstalled', handleAppInstalled);
+                };
+            }, []);
+
+            const handleInstallPWA = async () => {
+                if (installPrompt) {
+                    installPrompt.prompt();
+                    const { outcome } = await installPrompt.userChoice;
+                    if (outcome === 'accepted') {
+                        setInstallPrompt(null);
+                        setIsAppInstalled(true);
+                    }
+                } else {
+                    alert("SANKET PWA INSTALLATION:\n\n• Windows/Chrome/Edge: Click the install icon in your browser address bar.\n• iPhone / iPad: Tap Safari Share icon -> 'Add to Home Screen'.\n• Android: Tap browser menu (⋮) -> 'Install App' or 'Add to Home Screen'.");
+                }
+            };
             
             const [spottings, setSpottings] = useState([]);
             const [militaryPosts, setMilitaryPosts] = useState([]);
@@ -719,6 +773,16 @@
                                     Authenticate Uplink & GPS
                                 </button>
                             </form>
+
+                            {!isAppInstalled && (
+                                <button 
+                                    type="button" 
+                                    onClick={handleInstallPWA} 
+                                    className="w-full mt-3 py-2.5 px-3 bg-slate-950 hover:bg-slate-800 border border-emerald-500/30 rounded-lg text-emerald-400 font-bold text-xs flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <span>📲</span> INSTALL AS DESKTOP / MOBILE APP
+                                </button>
+                            )}
                         </div>
                     </div>
                 );
@@ -1125,6 +1189,14 @@
                             </div>
 
                             <div className="flex items-center gap-3">
+                                {!isAppInstalled && (
+                                    <button 
+                                        onClick={handleInstallPWA} 
+                                        className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-950/80 border border-emerald-500/40 text-[10px] md:text-xs text-emerald-400 font-bold hover:bg-emerald-800 hover:text-white transition-colors"
+                                    >
+                                        <span>📲</span> INSTALL APP
+                                    </button>
+                                )}
                                 {activeSpottings.length > 0 && (
                                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-red-950/80 border border-red-500/50 text-[10px] md:text-xs text-red-400 font-bold animate-pulse">
                                         <span className="w-2 h-2 rounded-full bg-red-500"></span>
@@ -1149,6 +1221,12 @@
                                     <button onClick={() => { setShowC2CentreModal(true); setIsMenuOpen(false); }} className="w-full text-left px-4 py-2.5 text-[10px] font-bold text-amber-400 hover:bg-slate-800 border-b border-slate-800 flex justify-between items-center">
                                         <span>⚡ C2 CENTRE COMMAND</span>
                                         <span className="bg-amber-500/20 px-1.5 py-0.5 rounded text-[9px]">ADMIN</span>
+                                    </button>
+                                )}
+                                {!isAppInstalled && (
+                                    <button onClick={() => { handleInstallPWA(); setIsMenuOpen(false); }} className="w-full text-left px-4 py-2.5 text-[10px] font-bold text-emerald-400 hover:bg-slate-800 border-b border-slate-800 flex justify-between items-center">
+                                        <span>📲 INSTALL SANKET APP</span>
+                                        <span className="bg-emerald-500/20 px-1.5 py-0.5 rounded text-[9px]">PWA</span>
                                     </button>
                                 )}
                                 <button onClick={() => { setRedLightMode(!redLightMode); setIsMenuOpen(false); }} className="w-full text-left px-4 py-2.5 text-[10px] font-bold text-slate-300 hover:bg-slate-800 border-b border-slate-800">
